@@ -1,252 +1,198 @@
-# -------------------------------
-# Lévy Distribution Simulation using Rejection Sampling
-# Parameters: μ = 1, c = 4
-# -------------------------------
+# ==============================================================================
+# 0. 环境初始化与定义
+# ==============================================================================
+rm(list=ls())       # 清空工作空间
+set.seed(2023)      # 设置随机种子
+par(mfrow = c(2, 2)) # 设置绘图布局: 2行2列
 
-# 设置参数
+# 定义 Lévy 分布参数
 mu <- 1
-c <- 4
-n <- 10000  # 目标样本数
+c_param <- 4
+N <- 10000          # 模拟样本量
 
-# 设置随机种子以保证可重复性
-set.seed(123)
+# 定义存储接受率的列表，用于最后打印
+efficiency_results <- list()
 
-# 定义Lévy分布的理论密度函数
-f_levy <- function(x, mu, c) {
-  ifelse(x > mu,
-         sqrt(c / (2 * pi)) * exp(-c / (2 * (x - mu))) / ((x - mu)^(3/2)),
+# ------------------------------------------------------------------------------
+# 目标分布：Lévy Probability Density Function (PDF)
+# ------------------------------------------------------------------------------
+dlevy <- function(x) {
+  y <- numeric(length(x))
+  idx <- x > mu
+  if(any(idx)) {
+    val <- x[idx]
+    # 公式: sqrt(c/2pi) * exp(-c/(2(x-mu))) / (x-mu)^(3/2)
+    term1 <- sqrt(c_param / (2 * pi))
+    term2 <- exp(-c_param / (2 * (val - mu)))
+    term3 <- (val - mu)^(1.5)
+    y[idx] <- term1 * term2 / term3
+  }
+  return(y)
+}
+
+# ------------------------------------------------------------------------------
+# 通用拒绝采样运行函数
+# ------------------------------------------------------------------------------
+run_rejection <- function(n, M, r_prop, d_prop, name) {
+  samples <- numeric(n)
+  count <- 0
+  attempts <- 0
+  
+  while(count < n) {
+    attempts <- attempts + 1
+    
+    # 1. 从建议分布生成候选值 Y
+    Y <- r_prop(1)
+    
+    # 2. 生成均匀随机数 U
+    U <- runif(1)
+    
+    # 3. 计算接受比率
+    g_val <- d_prop(Y)
+    
+    # 边界保护：如果 g(Y) <= 0 (超出支撑集)，直接拒绝
+    if(g_val <= 0) next 
+    
+    ratio <- dlevy(Y) / (M * g_val)
+    
+    if(U <= ratio) {
+      count <- count + 1
+      samples[count] <- Y
+    }
+  }
+  
+  eff <- n / attempts
+  cat(sprintf("[%s] 完成。M = %.4f\n", name, M))
+  return(list(samples = samples, efficiency = eff))
+}
+
+# ==============================================================================
+# 方法 1: Sampling via the Normal Distribution (正态变换法)
+# ==============================================================================
+cat(">>> 方法 1: 正态变换法 (Exact Method)...\n")
+Z <- rnorm(N)
+X_normal <- mu + c_param / Z^2
+
+# 绘图 Method 1
+x_grid <- seq(1.01, 20, length.out = 1000)
+y_true <- dlevy(x_grid)
+hist(X_normal[X_normal <= 20], breaks = 50, prob = TRUE, col = "lightblue", border = "white",
+     main = "1. Normal Transform", xlab = "x")
+lines(x_grid, y_true, col = "red", lwd = 2)
+
+
+# ==============================================================================
+# 方法 2a: Pareto Proposal (最佳参数 alpha=0.5)
+# ==============================================================================
+cat("\n>>> 方法 2a: Pareto Proposal (alpha=0.5)...\n")
+
+pareto_xm <- 1
+pareto_alpha <- 0.5 # 匹配 Lévy 尾部 (x^-1.5)
+
+dpareto <- function(x) {
+  ifelse(x >= pareto_xm, pareto_alpha * pareto_xm^pareto_alpha / x^(pareto_alpha + 1), 0)
+}
+rpareto <- function(n) {
+  u <- runif(n)
+  pareto_xm / (1 - u)^(1 / pareto_alpha)
+}
+
+# 计算 M
+ratio_fn_p <- function(x) { dlevy(x) / dpareto(x) }
+opt_p <- optimize(ratio_fn_p, interval = c(1.001, 100), maximum = TRUE)
+M_pareto <- opt_p$objective * 1.05
+
+# 执行采样
+res_pareto <- run_rejection(N, M_pareto, rpareto, dpareto, "Pareto")
+X_pareto <- res_pareto$samples
+efficiency_results$Pareto <- res_pareto$efficiency
+
+# 绘图 Method 2a
+hist(X_pareto[X_pareto <= 20], breaks = 50, prob = TRUE, col = "lightgreen", border = "white",
+     main = "2a. Pareto (alpha=0.5)", xlab = "x")
+lines(x_grid, y_true, col = "red", lwd = 2)
+# 图例中仅显示 M，不显示接受率
+legend("topright", paste("M =", round(M_pareto, 2)), bty="n", cex=0.8)
+
+
+# ==============================================================================
+# 方法 2b: Uniform Proposal (区间缩小至 [1, 10])
+# ==============================================================================
+cat("\n>>> 方法 2b: Uniform Proposal [1, 10]...\n")
+
+unif_min <- 1
+unif_max <- 10  # 区间 [1, 10]
+
+dunif_c <- function(x) dunif(x, min = unif_min, max = unif_max)
+runif_c <- function(n) runif(n, min = unif_min, max = unif_max)
+
+# 计算 M (仅在 1 到 10 之间)
+ratio_fn_u <- function(x) { dlevy(x) / dunif_c(x) }
+opt_u <- optimize(ratio_fn_u, interval = c(1.001, 10), maximum = TRUE)
+M_unif <- opt_u$objective * 1.05
+
+# 执行采样
+res_unif <- run_rejection(N, M_unif, runif_c, dunif_c, "Uniform")
+X_unif <- res_unif$samples
+efficiency_results$Uniform <- res_unif$efficiency
+
+# 绘图 Method 2b
+hist(X_unif[X_unif <= 20], breaks = 50, prob = TRUE, col = "orange", border = "white",
+     main = "2b. Uniform [1, 10]", xlab = "x")
+lines(x_grid, y_true, col = "red", lwd = 2)
+# 图例中仅显示 M，不显示接受率
+legend("topright", paste("M =", round(M_unif, 2)), bty="n", cex=0.8)
+
+
+# ==============================================================================
+# 方法 3: Own Sight - Shifted Inverse Gamma (平移逆伽马)
+# ==============================================================================
+cat("\n>>> 方法 3: Own Sight - Shifted Inverse Gamma (alpha=0.4)...\n")
+
+ig_shape <- 0.4
+ig_scale <- 1
+
+# 平移逆伽马 PDF: Y ~ InvGamma, X = mu + Y
+dinvgamma_shifted <- function(x) {
+  y <- x - mu
+  ifelse(y > 0, 
+         (ig_scale^ig_shape / gamma(ig_shape)) * y^(-ig_shape - 1) * exp(-ig_scale/y),
          0)
 }
-
-# ========================================
-# 方法1: 使用Pareto分布作为提议分布
-# ========================================
-cat("方法1: 使用Pareto分布作为提议分布\n")
-cat("=====================================\n")
-
-# Pareto分布: g(x) = a*x_m^a / x^(a+1), x >= x_m
-# 选择参数: x_m = mu = 1, a = 1.5 (使其尾部与Lévy分布相似)
-x_m <- mu
-a <- 0.45
-
-# Pareto分布的密度函数
-g_pareto <- function(x, x_m, a) {
-  ifelse(x >= x_m, a * x_m^a / x^(a+1), 0)
+# 平移逆伽马 RNG
+rinvgamma_shifted <- function(n) {
+  g <- rgamma(n, shape = ig_shape, rate = ig_scale) 
+  return(mu + 1/g) 
 }
 
-# Pareto分布的采样函数 (逆变换法)
-rpareto <- function(n, x_m, a) {
-  u <- runif(n)
-  x_m / (u^(1/a))
-}
+# 计算 M
+ratio_fn_ig <- function(x) { dlevy(x) / dinvgamma_shifted(x) }
+opt_ig <- optimize(ratio_fn_ig, interval = c(1.001, 500), maximum = TRUE)
+M_ig <- opt_ig$objective * 1.05
 
-# 寻找最优的常数M (使得 f(x) <= M*g(x) 对所有x成立)
-# 通过数值方法寻找 max(f(x)/g(x))
-x_test <- seq(mu + 0.01, 100, length.out = 10000)
-ratio_pareto <- f_levy(x_test, mu, c) / g_pareto(x_test, x_m, a)
-M_pareto <- max(ratio_pareto, na.rm = TRUE)
+# 执行采样
+res_ig <- run_rejection(N, M_ig, rinvgamma_shifted, dinvgamma_shifted, "Inverse Gamma")
+X_own <- res_ig$samples
+efficiency_results$InvGamma <- res_ig$efficiency
 
-cat("Pareto提议分布参数: x_m =", x_m, ", a =", a, "\n")
-cat("常数M =", round(M_pareto, 4), "\n")
-cat("说明: M = max(f(x)/g(x)) 确保 f(x) ≤ M·g(x) 对所有x成立\n")
+# 绘图 Method 3
+hist(X_own[X_own <= 20], breaks = 50, prob = TRUE, col = "violet", border = "white",
+     main = "3. Own Sight (InvGamma)", xlab = "x")
+lines(x_grid, y_true, col = "red", lwd = 2)
+# 图例中仅显示 M，不显示接受率
+legend("topright", paste("M =", round(M_ig, 2)), bty="n", cex=0.8)
 
-# 拒绝采样
-X_pareto <- numeric(n)
-n_accepted_pareto <- 0
-n_total_pareto <- 0
-
-while(n_accepted_pareto < n) {
-  # 从提议分布采样
-  y <- rpareto(1, x_m, a)
-  n_total_pareto <- n_total_pareto + 1
-  
-  # 计算接受概率
-  u <- runif(1)
-  acceptance_prob <- f_levy(y, mu, c) / (M_pareto * g_pareto(y, x_m, a))
-  
-  # 接受或拒绝
-  if(u <= acceptance_prob) {
-    n_accepted_pareto <- n_accepted_pareto + 1
-    X_pareto[n_accepted_pareto] <- y
-  }
-}
-
-acceptance_rate_pareto <- n / n_total_pareto
-cat("接受率:", round(acceptance_rate_pareto * 100, 2), "%\n")
-cat("总共生成:", n_total_pareto, "个候选样本\n\n")
-
-# ========================================
-# 方法2: 使用均匀分布作为提议分布
-# ========================================
-cat("方法2: 使用均匀分布作为提议分布\n")
-cat("=====================================\n")
-
-# 均匀分布: g(x) = 1/(b-a), a <= x <= b
-# 选择参数: a = mu = 1, b = 50 (覆盖Lévy分布的主要区域)
-a_unif <- mu
-b_unif <- 10
-
-# 均匀分布的密度函数
-g_unif <- function(x, a, b) {
-  ifelse(x >= a & x <= b, 1 / (b - a), 0)
-}
-
-# 均匀分布的采样函数
-runif_range <- function(n, a, b) {
-  runif(n, min = a, max = b)
-}
-
-# 寻找最优的常数M
-# 统一计算方式: M = max(f(x)/g(x))
-x_test <- seq(a_unif + 0.01, b_unif, length.out = 10000)
-ratio_unif <- f_levy(x_test, mu, c) / g_unif(x_test, a_unif, b_unif)
-M_unif <- max(ratio_unif, na.rm = TRUE) * 1.1  # 1.1作为安全边界
-
-cat("均匀分布参数: a =", a_unif, ", b =", b_unif, "\n")
-cat("常数M =", round(M_unif, 4), "\n")
-cat("说明: M = max(f(x)/g(x)) 确保 f(x) ≤ M·g(x) 对所有x成立\n")
-
-# 拒绝采样
-X_unif <- numeric(n)
-n_accepted_unif <- 0
-n_total_unif <- 0
-
-while(n_accepted_unif < n) {
-  # 从提议分布采样
-  y <- runif_range(1, a_unif, b_unif)
-  n_total_unif <- n_total_unif + 1
-  
-  # 计算接受概率
-  u <- runif(1)
-  acceptance_prob <- f_levy(y, mu, c) / (M_unif * g_unif(y, a_unif, b_unif))
-  
-  # 接受或拒绝
-  if(u <= acceptance_prob) {
-    n_accepted_unif <- n_accepted_unif + 1
-    X_unif[n_accepted_unif] <- y
-  }
-}
-
-acceptance_rate_unif <- n / n_total_unif
-cat("接受率:", round(acceptance_rate_unif * 100, 2), "%\n")
-cat("总共生成:", n_total_unif, "个候选样本\n\n")
-
-# ========================================
-# 直接采样方法 (作为对比)
-# ========================================
-cat("方法3: 直接采样方法 (使用正态分布变换)\n")
-cat("=====================================\n")
-Z <- rnorm(n, mean = 0, sd = 1)
-X_direct <- mu + c / (Z^2)
-cat("无需拒绝，直接生成", n, "个样本\n\n")
-
-# ========================================
-# 统计对比
-# ========================================
-cat("\n三种方法的统计对比\n")
-cat("=====================================\n")
-
-methods <- c("Pareto提议", "均匀提议", "直接采样")
-means <- c(mean(X_pareto), mean(X_unif), mean(X_direct))
-medians <- c(median(X_pareto), median(X_unif), median(X_direct))
-vars <- c(var(X_pareto), var(X_unif), var(X_direct))
-
-comparison <- data.frame(
-  方法 = methods,
-  均值 = round(means, 2),
-  中位数 = round(medians, 2),
-  方差 = round(vars, 2)
-)
-print(comparison)
-
-# ========================================
-# 可视化对比
-# ========================================
-par(mfrow = c(2, 3), mar = c(4, 4, 3, 2))
-
-# 图1: Pareto提议 - 直方图
-hist(X_pareto, breaks = 100, freq = FALSE, 
-     xlim = c(1, 50), ylim = c(0, 0.5),
-     main = "方法1: Pareto提议分布",
-     xlab = "x", ylab = "密度",
-     col = "lightblue", border = "white")
-x_vals <- seq(1, 50, length.out = 1000)
-lines(x_vals, f_levy(x_vals, mu, c), col = "red", lwd = 2)
-lines(x_vals, g_pareto(x_vals, x_m, a), col = "green", lwd = 2, lty = 2)
-legend("topright", 
-       legend = c("样本", "目标PDF", "提议PDF"),
-       col = c("lightblue", "red", "green"), 
-       lwd = c(10, 2, 2), lty = c(1, 1, 2), cex = 0.8)
-
-# 图2: 均匀提议 - 直方图
-hist(X_unif, breaks = 100, freq = FALSE, 
-     xlim = c(1, 50), ylim = c(0, 0.5),
-     main = "方法2: 均匀提议分布",
-     xlab = "x", ylab = "密度",
-     col = "lightgreen", border = "white")
-lines(x_vals, f_levy(x_vals, mu, c), col = "red", lwd = 2)
-x_unif_range <- seq(a_unif, b_unif, length.out = 1000)
-lines(x_unif_range, g_unif(x_unif_range, a_unif, b_unif), col = "purple", lwd = 2, lty = 2)
-legend("topright", 
-       legend = c("样本", "目标PDF", "提议PDF"),
-       col = c("lightgreen", "red", "purple"), 
-       lwd = c(10, 2, 2), lty = c(1, 1, 2), cex = 0.8)
-
-# 图3: 直接采样 - 直方图
-hist(X_direct, breaks = 100, freq = FALSE, 
-     xlim = c(1, 50), ylim = c(0, 0.5),
-     main = "方法3: 直接采样",
-     xlab = "x", ylab = "密度",
-     col = "lightyellow", border = "white")
-lines(x_vals, f_levy(x_vals, mu, c), col = "red", lwd = 2)
-legend("topright", 
-       legend = c("样本", "目标PDF"),
-       col = c("lightyellow", "red"), 
-       lwd = c(10, 2), cex = 0.8)
-
-# 定义Lévy分布的理论CDF
-F_levy <- function(x, mu, c) {
-  ifelse(x <= mu, 0, 
-         2 * pnorm(sqrt(c / (x - mu)), lower.tail = FALSE))
-}
-
-# 图4-6: CDF对比
-x_cdf <- seq(1, 50, length.out = 500)
-theoretical_cdf <- F_levy(x_cdf, mu, c)
-
-for(i in 1:3) {
-  X_current <- if(i == 1) X_pareto else if(i == 2) X_unif else X_direct
-  empirical_cdf <- sapply(x_cdf, function(x) mean(X_current <= x))
-  
-  plot(x_cdf, empirical_cdf, type = "l", col = "blue", lwd = 2,
-       main = paste("CDF对比:", methods[i]),
-       xlab = "x", ylab = "CDF", ylim = c(0, 1))
-  lines(x_cdf, theoretical_cdf, col = "red", lwd = 2, lty = 2)
-  legend("bottomright", 
-         legend = c("经验CDF", "理论CDF"),
-         col = c("blue", "red"), lwd = 2, lty = c(1, 2), cex = 0.8)
-}
-
+# 恢复默认绘图设置
 par(mfrow = c(1, 1))
 
-# ========================================
-# 拟合优度检验
-# ========================================
-cat("\nKolmogorov-Smirnov拟合优度检验\n")
-cat("=====================================\n")
-
-ks_pareto <- ks.test(X_pareto, function(x) F_levy(x, mu, c))
-ks_unif <- ks.test(X_unif, function(x) F_levy(x, mu, c))
-ks_direct <- ks.test(X_direct, function(x) F_levy(x, mu, c))
-
-cat("方法1 (Pareto):  D =", round(ks_pareto$statistic, 6), 
-    ", p-value =", format(ks_pareto$p.value, scientific = TRUE), "\n")
-cat("方法2 (均匀):    D =", round(ks_unif$statistic, 6), 
-    ", p-value =", format(ks_unif$p.value, scientific = TRUE), "\n")
-cat("方法3 (直接):    D =", round(ks_direct$statistic, 6), 
-    ", p-value =", format(ks_direct$p.value, scientific = TRUE), "\n")
-
-cat("\n结论: 所有方法的p值均", 
-    ifelse(min(ks_pareto$p.value, ks_unif$p.value, ks_direct$p.value) > 0.05,
-           "> 0.05，样本符合Lévy分布", 
-           "较小，但这在大样本下是正常的"), "\n")
+# ==============================================================================
+# 最终结果打印：接受率对比
+# ==============================================================================
+cat("\n=======================================================\n")
+cat("            拒绝采样算法效率对比 (Acceptance Rates)      \n")
+cat("=======================================================\n")
+cat(sprintf("1. Pareto Proposal (alpha=0.5):   %.2f%%\n", efficiency_results$Pareto * 100))
+cat(sprintf("2. Uniform Proposal [1, 10]:      %.2f%%\n", efficiency_results$Uniform * 100))
+cat(sprintf("3. InvGamma Proposal (alpha=0.4): %.2f%%\n", efficiency_results$InvGamma * 100))
+cat("=======================================================\n")
+cat("注：Uniform 分布仅模拟了区间 [1, 10] 内的数据。\n")
